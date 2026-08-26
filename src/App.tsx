@@ -245,6 +245,9 @@ export default function App() {
   /* ========================================
      SHOOT
   ======================================== */
+  /* ========================================
+     SHOOT
+  ======================================== */
 
   const shootBall = useCallback(
     (
@@ -254,77 +257,76 @@ export default function App() {
       pointerEndY: number
     ) => {
       if (screenRef.current !== "playing") return;
-  
+
       if (ballRef.current.shooting) return;
-  
+
       const game = gameRef.current;
       const hoop = hoopRef.current;
-  
+
       if (!game || !hoop) return;
-  
+
       const gameRect = game.getBoundingClientRect();
       const hoopRect = hoop.getBoundingClientRect();
-  
+
       const start = getBallStart();
-  
+
       const swipeX = pointerEndX - pointerStartX;
       const swipeY = pointerEndY - pointerStartY;
-  
+
       const upwardSwipe = Math.max(0, -swipeY);
-  
+
       /*
         POWER
-  
+
         Too weak = short.
         Stronger swipe = higher/faster shot.
       */
-  
+
       const power = Math.min(1.25, upwardSwipe / 220);
-  
+
       /*
         Current rim position.
       */
-  
+
       const rimX =
         hoopRect.left -
         gameRect.left +
         hoopRect.width * 0.5;
-  
+
       /*
-        Horizontal aim now comes from YOUR swipe.
-  
-        No automatic lock-on.
+        Horizontal aim comes from YOUR swipe.
       */
-  
+
       const swipeHorizontalVelocity =
         swipeX * 3.1;
-  
+
       /*
-        Tiny amount of assistance only.
-  
-        This nudges toward the basket,
-        but absolutely does NOT guarantee a score.
+        Small amount of aim assistance.
       */
-  
+
       const distanceToHoop =
         rimX - start.x;
-  
+
       const smallAimAssist =
         distanceToHoop * 0.22;
-  
-      const vx =
-        swipeHorizontalVelocity +
-        smallAimAssist;
-  
+
       /*
-        Vertical shot strength.
-        Weak swipe can fall short.
-        Hard swipe can overshoot.
+        SHOT SPEED
+
+        1.25 = 25% faster
       */
-  
+
+      const SHOT_SPEED = 1.25;
+
+      const vx =
+        (swipeHorizontalVelocity +
+          smallAimAssist) *
+        SHOT_SPEED;
+
       const vy =
-        -(720 + power * 470);
-  
+        -(720 + power * 470) *
+        SHOT_SPEED;
+
       ballRef.current = {
         x: start.x,
         y: start.y,
@@ -337,7 +339,7 @@ export default function App() {
     },
     [getBallStart]
   );
-
+  
   /* ========================================
      PHYSICS LOOP
   ======================================== */
