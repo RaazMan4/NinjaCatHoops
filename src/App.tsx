@@ -316,7 +316,7 @@ export default function App() {
         1.25 = 25% faster
       */
 
-      const SHOT_SPEED = 1.25;
+      const SHOT_SPEED = 1.45;
 
       const vx =
         (swipeHorizontalVelocity +
