@@ -816,22 +816,15 @@ export default function App() {
           the existing hoop, we can safely move it.
         */
 
-        const unresolvedBalls =
-          remainingBalls.some(
-            (ball) =>
-              !ball.scored
-          );
+   if (pendingHoopMoveRef.current) {
+  pendingHoopMoveRef.current = false;
 
-        if (
-          pendingHoopMoveRef.current &&
-          !unresolvedBalls
-        ) {
-          pendingHoopMoveRef.current =
-            false;
-
-          moveHoop();
-        }
-      }
+  window.setTimeout(() => {
+    if (screenRef.current === "playing") {
+      moveHoop();
+    }
+  }, 180);
+}
 
       lastFrameRef.current =
         time;
