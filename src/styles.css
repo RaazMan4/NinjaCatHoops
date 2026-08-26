@@ -1034,9 +1034,9 @@ img {
     height: 44vh;
   }
 
-  .game-ball {
-    width: clamp(60px, 17vw, 76px);
-  }
+ .game-ball {
+  width: clamp(72px, 20vw, 88px);
+}
 
   .player-card {
     height: min(40vh, 360px);
