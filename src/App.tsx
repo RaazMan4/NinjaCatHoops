@@ -11,53 +11,84 @@ type Player = "ninjacat" | "manyu";
 type Screen = "menu" | "playing" | "gameover";
 
 type BallState = {
+  id: number;
   x: number;
   y: number;
   vx: number;
   vy: number;
-  shooting: boolean;
   scored: boolean;
   startedAt: number;
+  scoredAt: number | null;
+};
+
+type BallRender = {
+  id: number;
+  x: number;
+  y: number;
+  rotation: number;
 };
 
 const GAME_TIME = 30;
-const GRAVITY = 1750;
+
+/*
+  Faster gravity = quicker shot without
+  making the ball fly miles above the screen.
+*/
+const SHOT_GRAVITY = 2500;
+
+/*
+  New basketball appears in hand this quickly
+  after releasing the previous one.
+*/
+const RELOAD_TIME = 180;
 
 export default function App() {
   const gameRef = useRef<HTMLDivElement | null>(null);
   const hoopRef = useRef<HTMLImageElement | null>(null);
+
   const animationRef = useRef<number | null>(null);
   const lastFrameRef = useRef(0);
 
-  const [screen, setScreen] = useState<Screen>("menu");
-  const [player, setPlayer] = useState<Player>("ninjacat");
+  const nextBallIdRef = useRef(1);
+
+  const [screen, setScreen] =
+    useState<Screen>("menu");
+
+  const [player, setPlayer] =
+    useState<Player>("ninjacat");
 
   const [score, setScore] = useState(0);
   const [combo, setCombo] = useState(0);
   const [bestCombo, setBestCombo] = useState(0);
-  const [timeLeft, setTimeLeft] = useState(GAME_TIME);
+
+  /*
+    Separate basket count so combo bonus
+    doesn't suddenly shoot the LEVEL upwards.
+  */
+  const [madeShots, setMadeShots] = useState(0);
+
+  const [timeLeft, setTimeLeft] =
+    useState(GAME_TIME);
 
   const [hoopLeft, setHoopLeft] = useState(50);
 
   const [message, setMessage] = useState("");
   const [swish, setSwish] = useState(false);
 
-  const [ballRender, setBallRender] = useState({
-    x: 0,
-    y: 0,
-    visible: false,
-    rotation: 0,
-  });
+  /*
+    Ball currently waiting in player's hand.
+  */
+  const [ballReady, setBallReady] = useState(false);
 
-  const ballRef = useRef<BallState>({
-    x: 0,
-    y: 0,
-    vx: 0,
-    vy: 0,
-    shooting: false,
-    scored: false,
-    startedAt: 0,
-  });
+  /*
+    All basketballs currently flying.
+  */
+  const [flyingBalls, setFlyingBalls] =
+    useState<BallRender[]>([]);
+
+  const ballsRef = useRef<BallState[]>([]);
+
+  const ballReadyRef = useRef(false);
 
   const pointerStart = useRef({
     x: 0,
@@ -68,6 +99,23 @@ export default function App() {
   const screenRef = useRef<Screen>("menu");
   const scoreRef = useRef(0);
   const comboRef = useRef(0);
+  const madeShotsRef = useRef(0);
+
+  /*
+    If another basketball is still flying when
+    one scores, don't suddenly move the hoop away
+    from that second ball.
+
+    We'll move it once the current flying shots
+    have resolved.
+  */
+  const pendingHoopMoveRef = useRef(false);
+
+  const messageTimeoutRef =
+    useRef<number | null>(null);
+
+  const swishTimeoutRef =
+    useRef<number | null>(null);
 
   useEffect(() => {
     screenRef.current = screen;
@@ -81,170 +129,307 @@ export default function App() {
     comboRef.current = combo;
   }, [combo]);
 
+  useEffect(() => {
+    madeShotsRef.current = madeShots;
+  }, [madeShots]);
+
   /* ========================================
      BALL SIZE
   ======================================== */
 
   const getBallSize = useCallback(() => {
-    const width =
-      gameRef.current?.clientWidth ?? window.innerWidth;
+    /*
+      Your current mobile CSS makes it 95px,
+      so scoring collision now matches that.
+    */
 
-    if (width <= 520) {
-      return Math.max(58, Math.min(76, width * 0.16));
+    if (window.innerWidth <= 700) {
+      return 95;
     }
 
-    return Math.max(68, Math.min(90, width * 0.1));
+    const width =
+      gameRef.current?.clientWidth ??
+      window.innerWidth;
+
+    return Math.max(
+      68,
+      Math.min(90, width * 0.1)
+    );
   }, []);
 
   /* ========================================
      BALL STARTING POSITION
-     Raised shooting hand
   ======================================== */
 
- const getBallStart = useCallback(() => {
-  const game = gameRef.current;
+  const getBallStart = useCallback(() => {
+    const game = gameRef.current;
 
-  if (!game) {
-    return { x: 0, y: 0 };
-  }
+    if (!game) {
+      return {
+        x: 0,
+        y: 0,
+      };
+    }
 
-  const w = game.clientWidth;
-  const h = game.clientHeight;
+    const w = game.clientWidth;
+    const h = game.clientHeight;
 
-  // IMPORTANT:
-  // Uses actual DEVICE/SCREEN width,
-  // not the game container width.
-  const isMobile = window.innerWidth <= 700;
+    /*
+      Uses actual browser width so desktop
+      does NOT accidentally use mobile position.
+    */
 
-  if (isMobile) {
+    const isMobile =
+      window.innerWidth <= 700;
+
+    if (isMobile) {
+      return {
+        /*
+          MOBILE ONLY.
+          Your current hand position.
+        */
+        x: w * 0.76,
+        y: h * 0.59,
+      };
+    }
+
+    /*
+      DESKTOP LEFT EXACTLY AS IT WAS.
+    */
+
     return {
-      // MOBILE ONLY - ball at raised hand
-      x: w * 0.76,
-      y: h * 0.59,
+      x: w * 0.655,
+      y: h * 0.615,
     };
-  }
+  }, [player]);
 
-  // DESKTOP - ORIGINAL POSITION
-  // completely unchanged
-  return {
-    x: w * 0.655,
-    y: h * 0.615,
-  };
-}, [player]);
+  /* ========================================
+     BALL RELOAD
+  ======================================== */
 
-  const resetBall = useCallback(() => {
-    const start = getBallStart();
+  const makeBallReady = useCallback(() => {
+    if (
+      screenRef.current !== "playing"
+    ) {
+      return;
+    }
 
-    ballRef.current = {
-      x: start.x,
-      y: start.y,
-      vx: 0,
-      vy: 0,
-      shooting: false,
-      scored: false,
-      startedAt: 0,
-    };
+    ballReadyRef.current = true;
+    setBallReady(true);
+  }, []);
 
-    setBallRender({
-      x: start.x,
-      y: start.y,
-      visible: true,
-      rotation: 0,
-    });
-  }, [getBallStart]);
+  const reloadBall = useCallback(() => {
+    window.setTimeout(() => {
+      makeBallReady();
+    }, RELOAD_TIME);
+  }, [makeBallReady]);
 
   /* ========================================
      MESSAGE
   ======================================== */
 
-  const showMessage = useCallback((text: string) => {
-    setMessage(text);
+  const showMessage = useCallback(
+    (text: string) => {
+      if (messageTimeoutRef.current) {
+        window.clearTimeout(
+          messageTimeoutRef.current
+        );
+      }
 
-    window.setTimeout(() => {
-      setMessage("");
-    }, 650);
-  }, []);
+      setMessage(text);
+
+      messageTimeoutRef.current =
+        window.setTimeout(() => {
+          setMessage("");
+        }, 650);
+    },
+    []
+  );
+
+  /* ========================================
+     SWISH EFFECT
+  ======================================== */
+
+  const triggerSwish =
+    useCallback(() => {
+      if (swishTimeoutRef.current) {
+        window.clearTimeout(
+          swishTimeoutRef.current
+        );
+      }
+
+      setSwish(true);
+
+      swishTimeoutRef.current =
+        window.setTimeout(() => {
+          setSwish(false);
+        }, 450);
+    }, []);
 
   /* ========================================
      MOVE HOOP
   ======================================== */
 
   const moveHoop = useCallback(() => {
-    const positions = [35, 42, 50, 58, 65];
+    const positions = [
+      35,
+      42,
+      50,
+      58,
+      65,
+    ];
 
     setHoopLeft((current) => {
-      const choices = positions.filter(
-        (position) => Math.abs(position - current) >= 7
-      );
+      const choices =
+        positions.filter(
+          (position) =>
+            Math.abs(
+              position - current
+            ) >= 7
+        );
 
-      return choices[Math.floor(Math.random() * choices.length)];
+      return choices[
+        Math.floor(
+          Math.random() *
+            choices.length
+        )
+      ];
     });
   }, []);
 
   /* ========================================
-     SCORE
+     SCORE A BASKET
   ======================================== */
 
-  const registerScore = useCallback(() => {
-    const nextScore = scoreRef.current + 1;
-    const nextCombo = comboRef.current + 1;
+  const registerScore =
+    useCallback(() => {
+      /*
+        Normal basket = +1 point.
+      */
 
-    scoreRef.current = nextScore;
-    comboRef.current = nextCombo;
+      const nextScore =
+        scoreRef.current + 1;
 
-    setScore(nextScore);
-    setCombo(nextCombo);
-    setBestCombo((old) => Math.max(old, nextCombo));
+      const nextCombo =
+        comboRef.current + 1;
 
-    setSwish(true);
+      const nextMadeShots =
+        madeShotsRef.current + 1;
 
-    window.setTimeout(() => {
-      setSwish(false);
-    }, 450);
+      scoreRef.current =
+        nextScore;
 
-    if (nextCombo >= 5) {
-      showMessage(`🔥 ${nextCombo}x COMBO!`);
-    } else if (nextCombo >= 3) {
-      showMessage(`${nextCombo}x COMBO!`);
-    } else {
-      showMessage("SWISH! +1");
-    }
+      comboRef.current =
+        nextCombo;
 
-    /*
-      Let the ball visibly fall THROUGH the basket first.
-    */
+      madeShotsRef.current =
+        nextMadeShots;
 
-    window.setTimeout(() => {
-      if (screenRef.current === "playing") {
-        moveHoop();
+      setScore(nextScore);
+      setCombo(nextCombo);
+      setMadeShots(nextMadeShots);
+
+      setBestCombo((old) =>
+        Math.max(
+          old,
+          nextCombo
+        )
+      );
+
+      triggerSwish();
+
+      if (nextCombo >= 5) {
+        showMessage(
+          `🔥 ${nextCombo}x COMBO!`
+        );
+      } else if (
+        nextCombo >= 3
+      ) {
+        showMessage(
+          `${nextCombo}x COMBO!`
+        );
+      } else {
+        showMessage(
+          "SWISH! +1"
+        );
       }
-    }, 250);
 
-    window.setTimeout(() => {
-      if (screenRef.current === "playing") {
-        resetBall();
-      }
-    }, 480);
-  }, [moveHoop, resetBall, showMessage]);
+      /*
+        Don't move basket immediately if other
+        balls are still flying toward it.
+      */
+
+      pendingHoopMoveRef.current =
+        true;
+    }, [
+      showMessage,
+      triggerSwish,
+    ]);
+
+  /* ========================================
+     BANK COMBO
+  ======================================== */
+
+  const bankCombo =
+    useCallback(
+      (showBonus = true) => {
+        const streak =
+          comboRef.current;
+
+        if (streak <= 0) {
+          comboRef.current = 0;
+          setCombo(0);
+          return 0;
+        }
+
+        /*
+          YOUR SCORING RULE:
+
+          4x combo = +40
+          3x combo = +30
+          etc.
+        */
+
+        const bonus =
+          streak * 10;
+
+        const newScore =
+          scoreRef.current +
+          bonus;
+
+        scoreRef.current =
+          newScore;
+
+        comboRef.current = 0;
+
+        setScore(newScore);
+        setCombo(0);
+
+        if (showBonus) {
+          showMessage(
+            `COMBO BONUS +${bonus}`
+          );
+        }
+
+        return bonus;
+      },
+      [showMessage]
+    );
 
   /* ========================================
      MISS
   ======================================== */
 
-  const registerMiss = useCallback(() => {
-    comboRef.current = 0;
-    setCombo(0);
+  const registerMiss =
+    useCallback(() => {
+      /*
+        A miss ends the streak and banks
+        whatever combo was built.
+      */
 
-    window.setTimeout(() => {
-      if (screenRef.current === "playing") {
-        resetBall();
-      }
-    }, 160);
-  }, [resetBall]);
+      bankCombo(true);
+    }, [bankCombo]);
 
-  /* ========================================
-     SHOOT
-  ======================================== */
   /* ========================================
      SHOOT
   ======================================== */
@@ -256,247 +441,544 @@ export default function App() {
       pointerEndX: number,
       pointerEndY: number
     ) => {
-      if (screenRef.current !== "playing") return;
-
-      if (ballRef.current.shooting) return;
-
-      const game = gameRef.current;
-      const hoop = hoopRef.current;
-
-      if (!game || !hoop) return;
-
-      const gameRect = game.getBoundingClientRect();
-      const hoopRect = hoop.getBoundingClientRect();
-
-      const start = getBallStart();
-
-      const swipeX = pointerEndX - pointerStartX;
-      const swipeY = pointerEndY - pointerStartY;
-
-      const upwardSwipe = Math.max(0, -swipeY);
+      if (
+        screenRef.current !==
+        "playing"
+      ) {
+        return;
+      }
 
       /*
-        POWER
+        We only care whether there is currently
+        a fresh basketball in the player's hand.
 
-        Too weak = short.
-        Stronger swipe = higher/faster shot.
+        Previous balls can still be flying.
       */
 
-      const power = Math.min(1.25, upwardSwipe / 220);
+      if (
+        !ballReadyRef.current
+      ) {
+        return;
+      }
+
+      const game =
+        gameRef.current;
+
+      const hoop =
+        hoopRef.current;
+
+      if (!game || !hoop) {
+        return;
+      }
+
+      const gameRect =
+        game.getBoundingClientRect();
+
+      const hoopRect =
+        hoop.getBoundingClientRect();
+
+      const start =
+        getBallStart();
+
+      const swipeX =
+        pointerEndX -
+        pointerStartX;
+
+      const swipeY =
+        pointerEndY -
+        pointerStartY;
+
+      const upwardSwipe =
+        Math.max(
+          0,
+          -swipeY
+        );
 
       /*
-        Current rim position.
+        Player still controls power.
+      */
+
+      const power =
+        Math.min(
+          1.25,
+          upwardSwipe / 220
+        );
+
+      /*
+        Current hoop centre.
       */
 
       const rimX =
         hoopRect.left -
         gameRect.left +
-        hoopRect.width * 0.5;
+        hoopRect.width *
+          0.5;
 
       /*
-        Horizontal aim comes from YOUR swipe.
+        Horizontal direction still comes
+        from YOUR swipe.
       */
 
       const swipeHorizontalVelocity =
         swipeX * 3.1;
 
       /*
-        Small amount of aim assistance.
+        Small aim assist.
+
+        This helps slightly but does NOT
+        lock every shot onto the basket.
       */
 
       const distanceToHoop =
         rimX - start.x;
 
       const smallAimAssist =
-        distanceToHoop * 0.22;
+        distanceToHoop *
+        0.22;
 
       /*
-        SHOT SPEED
+        HORIZONTAL SPEED
 
-        1.25 = 25% faster
+        Quick enough to feel snappy.
       */
-
-      const SHOT_SPEED = 1.45;
 
       const vx =
         (swipeHorizontalVelocity +
           smallAimAssist) *
-        SHOT_SPEED;
+        1.18;
+
+      /*
+        VERTICAL SPEED
+
+        IMPORTANT:
+        We are NOT using the previous 1.45
+        multiplier anymore.
+
+        That multiplier was why the ball
+        disappeared miles above the screen.
+
+        Strong gravity below makes this
+        trajectory quick without a giant arc.
+      */
 
       const vy =
-        -(720 + power * 470) *
-        SHOT_SPEED;
+        -(
+          1180 +
+          power * 200
+        );
 
-      ballRef.current = {
+      const id =
+        nextBallIdRef.current++;
+
+      const newBall: BallState = {
+        id,
         x: start.x,
         y: start.y,
         vx,
         vy,
-        shooting: true,
         scored: false,
-        startedAt: performance.now(),
+        startedAt:
+          performance.now(),
+        scoredAt: null,
       };
+
+      /*
+        Release this basketball.
+      */
+
+      ballsRef.current = [
+        ...ballsRef.current,
+        newBall,
+      ];
+
+      /*
+        Remove waiting ball from hand.
+      */
+
+      ballReadyRef.current =
+        false;
+
+      setBallReady(false);
+
+      /*
+        NEW BALL APPEARS AFTER 180ms
+        EVEN IF THIS BALL IS STILL FLYING.
+      */
+
+      reloadBall();
     },
-    [getBallStart]
+    [
+      getBallStart,
+      reloadBall,
+    ]
   );
-  
+
   /* ========================================
      PHYSICS LOOP
   ======================================== */
 
   useEffect(() => {
-    const frame = (time: number) => {
-      const game = gameRef.current;
-      const hoop = hoopRef.current;
-      const ball = ballRef.current;
+    const frame = (
+      time: number
+    ) => {
+      const game =
+        gameRef.current;
+
+      const hoop =
+        hoopRef.current;
 
       if (
-        screenRef.current === "playing" &&
+        screenRef.current ===
+          "playing" &&
         game &&
         hoop &&
-        ball.shooting
+        ballsRef.current.length >
+          0
       ) {
-        if (!lastFrameRef.current) {
-          lastFrameRef.current = time;
+        if (
+          !lastFrameRef.current
+        ) {
+          lastFrameRef.current =
+            time;
         }
 
-        let dt = (time - lastFrameRef.current) / 1000;
+        let dt =
+          (time -
+            lastFrameRef.current) /
+          1000;
 
-        dt = Math.min(dt, 0.025);
+        dt = Math.min(
+          dt,
+          0.025
+        );
 
-        const previousY = ball.y;
+        const gameRect =
+          game.getBoundingClientRect();
 
-        ball.vy += GRAVITY * dt;
-
-        ball.x += ball.vx * dt;
-        ball.y += ball.vy * dt;
-
-        const shotAge = performance.now() - ball.startedAt;
-
-        setBallRender({
-          x: ball.x,
-          y: ball.y,
-          visible: true,
-          rotation: shotAge * 0.25,
-        });
-
-        const gameRect = game.getBoundingClientRect();
-        const hoopRect = hoop.getBoundingClientRect();
+        const hoopRect =
+          hoop.getBoundingClientRect();
 
         const rimY =
-          hoopRect.top - gameRect.top + hoopRect.height * 0.29;
+          hoopRect.top -
+          gameRect.top +
+          hoopRect.height *
+            0.29;
 
         const rimX =
-          hoopRect.left - gameRect.left + hoopRect.width * 0.5;
+          hoopRect.left -
+          gameRect.left +
+          hoopRect.width *
+            0.5;
 
-        const rimHalfWidth = hoopRect.width * 0.2;
+        const rimHalfWidth =
+          hoopRect.width *
+          0.2;
 
-        const ballSize = getBallSize();
+        const ballSize =
+          getBallSize();
 
-        /*
-          SCORE ONLY WHEN:
-          ball was above rim
-          ball crosses rim going downward
-          ball is inside basket
-        */
+        const now =
+          performance.now();
 
-        const crossedRim =
-          previousY < rimY && ball.y >= rimY && ball.vy > 0;
+        const remainingBalls: BallState[] =
+          [];
 
-        const insideBasket =
-          Math.abs(ball.x - rimX) <
-          rimHalfWidth - ballSize * 0.05;
-
-        if (crossedRim && insideBasket && !ball.scored) {
-          ball.scored = true;
+        for (
+          const ball of ballsRef.current
+        ) {
+          const previousY =
+            ball.y;
 
           /*
-            IMPORTANT:
-            DO NOT stop physics here.
-
-            The ball keeps travelling down through the net.
+            Faster gravity brings the ball back
+            down quickly and keeps the arc on screen.
           */
 
-          registerScore();
+          ball.vy +=
+            SHOT_GRAVITY *
+            dt;
+
+          ball.x +=
+            ball.vx * dt;
+
+          ball.y +=
+            ball.vy * dt;
+
+          const shotAge =
+            now -
+            ball.startedAt;
+
+          /*
+            SCORE ONLY WHEN IT ACTUALLY
+            CROSSES DOWN THROUGH THE RIM.
+          */
+
+          if (!ball.scored) {
+            const crossedRim =
+              previousY <
+                rimY &&
+              ball.y >=
+                rimY &&
+              ball.vy > 0;
+
+            const insideBasket =
+              Math.abs(
+                ball.x -
+                  rimX
+              ) <
+              rimHalfWidth -
+                ballSize *
+                  0.05;
+
+            if (
+              crossedRim &&
+              insideBasket
+            ) {
+              ball.scored =
+                true;
+
+              ball.scoredAt =
+                now;
+
+              registerScore();
+            }
+          }
+
+          /*
+            Keep a scored basketball visible
+            briefly as it falls through the net.
+          */
+
+          if (
+            ball.scored &&
+            ball.scoredAt !==
+              null &&
+            now -
+              ball.scoredAt >
+              420
+          ) {
+            continue;
+          }
+
+          /*
+            MISS
+
+            Only unresolved basketballs can miss.
+          */
+
+          if (!ball.scored) {
+            const hasMissed =
+              ball.y >
+                game.clientHeight +
+                  120 ||
+              ball.x < -150 ||
+              ball.x >
+                game.clientWidth +
+                  150 ||
+              shotAge >
+                2400;
+
+            if (hasMissed) {
+              registerMiss();
+              continue;
+            }
+          }
+
+          remainingBalls.push(
+            ball
+          );
         }
+
+        ballsRef.current =
+          remainingBalls;
 
         /*
-          Only count as miss if it never scored.
+          Update everything visible.
         */
 
+        setFlyingBalls(
+          remainingBalls.map(
+            (ball) => ({
+              id: ball.id,
+              x: ball.x,
+              y: ball.y,
+              rotation:
+                (now -
+                  ball.startedAt) *
+                0.3,
+            })
+          )
+        );
+
+        /*
+          If a shot scored and there are no more
+          unresolved balls currently heading at
+          the existing hoop, we can safely move it.
+        */
+
+        const unresolvedBalls =
+          remainingBalls.some(
+            (ball) =>
+              !ball.scored
+          );
+
         if (
-          !ball.scored &&
-          (ball.y > game.clientHeight + 120 ||
-            ball.x < -150 ||
-            ball.x > game.clientWidth + 150 ||
-            shotAge > 3200)
+          pendingHoopMoveRef.current &&
+          !unresolvedBalls
         ) {
-          ball.shooting = false;
-          registerMiss();
+          pendingHoopMoveRef.current =
+            false;
+
+          moveHoop();
         }
       }
 
-      lastFrameRef.current = time;
+      lastFrameRef.current =
+        time;
 
-      animationRef.current = requestAnimationFrame(frame);
+      animationRef.current =
+        requestAnimationFrame(
+          frame
+        );
     };
 
-    animationRef.current = requestAnimationFrame(frame);
+    animationRef.current =
+      requestAnimationFrame(
+        frame
+      );
 
     return () => {
-      if (animationRef.current) {
-        cancelAnimationFrame(animationRef.current);
+      if (
+        animationRef.current
+      ) {
+        cancelAnimationFrame(
+          animationRef.current
+        );
       }
     };
-  }, [getBallSize, registerMiss, registerScore]);
+  }, [
+    getBallSize,
+    moveHoop,
+    registerMiss,
+    registerScore,
+  ]);
 
   /* ========================================
      TIMER
   ======================================== */
 
   useEffect(() => {
-    if (screen !== "playing") return;
+    if (
+      screen !== "playing"
+    ) {
+      return;
+    }
 
-    const timer = window.setInterval(() => {
-      setTimeLeft((current) => {
-        if (current <= 1) {
-          window.clearInterval(timer);
+    const timer =
+      window.setInterval(
+        () => {
+          setTimeLeft(
+            (current) => {
+              if (
+                current <= 1
+              ) {
+                window.clearInterval(
+                  timer
+                );
 
-          ballRef.current.shooting = false;
+                /*
+                  If game ends during a combo,
+                  bank that streak ×10 as well.
+                */
 
-          screenRef.current = "gameover";
-          setScreen("gameover");
+                bankCombo(false);
 
-          return 0;
-        }
+                ballsRef.current =
+                  [];
 
-        return current - 1;
-      });
-    }, 1000);
+                setFlyingBalls(
+                  []
+                );
 
-    return () => window.clearInterval(timer);
-  }, [screen]);
+                ballReadyRef.current =
+                  false;
+
+                setBallReady(
+                  false
+                );
+
+                pendingHoopMoveRef.current =
+                  false;
+
+                screenRef.current =
+                  "gameover";
+
+                setScreen(
+                  "gameover"
+                );
+
+                return 0;
+              }
+
+              return (
+                current - 1
+              );
+            }
+          );
+        },
+        1000
+      );
+
+    return () =>
+      window.clearInterval(
+        timer
+      );
+  }, [screen, bankCombo]);
 
   /* ========================================
      RESIZE
   ======================================== */
 
   useEffect(() => {
-    const handleResize = () => {
-      if (
-        screenRef.current === "playing" &&
-        !ballRef.current.shooting
-      ) {
-        resetBall();
-      }
-    };
+    const handleResize =
+      () => {
+        /*
+          No desktop/mobile positioning
+          values are changed here.
 
-    window.addEventListener("resize", handleResize);
+          This simply causes React to
+          redraw the waiting ball.
+        */
+
+        if (
+          screenRef.current ===
+          "playing" &&
+          ballReadyRef.current
+        ) {
+          setBallReady(false);
+
+          requestAnimationFrame(
+            () => {
+              setBallReady(
+                true
+              );
+            }
+          );
+        }
+      };
+
+    window.addEventListener(
+      "resize",
+      handleResize
+    );
 
     return () => {
-      window.removeEventListener("resize", handleResize);
+      window.removeEventListener(
+        "resize",
+        handleResize
+      );
     };
-  }, [resetBall]);
+  }, []);
 
   /* ========================================
      START GAME
@@ -505,28 +987,64 @@ export default function App() {
   const startGame = () => {
     scoreRef.current = 0;
     comboRef.current = 0;
+    madeShotsRef.current = 0;
+
+    ballsRef.current = [];
+
+    pendingHoopMoveRef.current =
+      false;
 
     setScore(0);
     setCombo(0);
     setBestCombo(0);
-    setTimeLeft(GAME_TIME);
+    setMadeShots(0);
+
+    setTimeLeft(
+      GAME_TIME
+    );
 
     setHoopLeft(50);
+
     setMessage("");
     setSwish(false);
 
-    screenRef.current = "playing";
+    setFlyingBalls([]);
+
+    ballReadyRef.current =
+      false;
+
+    setBallReady(false);
+
+    screenRef.current =
+      "playing";
+
     setScreen("playing");
 
+    /*
+      First ball appears immediately.
+    */
+
     window.setTimeout(() => {
-      resetBall();
-    }, 80);
+      makeBallReady();
+    }, 60);
   };
 
   const backToMenu = () => {
-    ballRef.current.shooting = false;
+    ballsRef.current = [];
 
-    screenRef.current = "menu";
+    setFlyingBalls([]);
+
+    ballReadyRef.current =
+      false;
+
+    setBallReady(false);
+
+    pendingHoopMoveRef.current =
+      false;
+
+    screenRef.current =
+      "menu";
+
     setScreen("menu");
   };
 
@@ -537,9 +1055,24 @@ export default function App() {
   const handlePointerDown = (
     e: ReactPointerEvent<HTMLDivElement>
   ) => {
-    if (screen !== "playing") return;
+    if (
+      screen !== "playing"
+    ) {
+      return;
+    }
 
-    if (pointerStart.current.active) return;
+    if (
+      !ballReadyRef.current
+    ) {
+      return;
+    }
+
+    if (
+      pointerStart.current
+        .active
+    ) {
+      return;
+    }
 
     pointerStart.current = {
       x: e.clientX,
@@ -548,7 +1081,9 @@ export default function App() {
     };
 
     try {
-      e.currentTarget.setPointerCapture(e.pointerId);
+      e.currentTarget.setPointerCapture(
+        e.pointerId
+      );
     } catch {
       // nothing
     }
@@ -559,21 +1094,36 @@ export default function App() {
   ) => {
     if (
       screen !== "playing" ||
-      !pointerStart.current.active
+      !pointerStart.current
+        .active
     ) {
       return;
     }
 
-    const start = pointerStart.current;
+    const start =
+      pointerStart.current;
 
-    pointerStart.current.active = false;
+    pointerStart.current.active =
+      false;
 
-    const dx = e.clientX - start.x;
-    const dy = e.clientY - start.y;
+    const dx =
+      e.clientX -
+      start.x;
 
-    const distance = Math.hypot(dx, dy);
+    const dy =
+      e.clientY -
+      start.y;
 
-    if (distance >= 25 && dy < -15) {
+    const distance =
+      Math.hypot(
+        dx,
+        dy
+      );
+
+    if (
+      distance >= 25 &&
+      dy < -15
+    ) {
       shootBall(
         start.x,
         start.y,
@@ -583,9 +1133,11 @@ export default function App() {
     }
   };
 
-  const handlePointerCancel = () => {
-    pointerStart.current.active = false;
-  };
+  const handlePointerCancel =
+    () => {
+      pointerStart.current.active =
+        false;
+    };
 
   const playerImage =
     player === "ninjacat"
@@ -597,16 +1149,33 @@ export default function App() {
       ? "/ninjacatselect.png"
       : "/manyuselect.png";
 
-  const level = Math.floor(score / 5) + 1;
+  /*
+    LEVEL stays based on baskets,
+    NOT combo bonus points.
+  */
+
+  const level =
+    Math.floor(
+      madeShots / 5
+    ) + 1;
+
+  const handBall =
+    getBallStart();
 
   return (
     <div className="app">
       <div
         ref={gameRef}
         className="game"
-        onPointerDown={handlePointerDown}
-        onPointerUp={handlePointerUp}
-        onPointerCancel={handlePointerCancel}
+        onPointerDown={
+          handlePointerDown
+        }
+        onPointerUp={
+          handlePointerUp
+        }
+        onPointerCancel={
+          handlePointerCancel
+        }
       >
         <img
           src="/Background2.png"
@@ -630,57 +1199,61 @@ export default function App() {
 
               <h1>
                 NINJACAT
-                <span>BASKETBALL</span>
+                <span>
+                  BASKETBALL
+                </span>
               </h1>
 
-              <p>CHOOSE YOUR FIGHTER</p>
+              <p>
+                CHOOSE YOUR FIGHTER
+              </p>
             </div>
 
             <div className="player-select">
               <button
                 className={`player-card ninja-card ${
-                  player === "ninjacat" ? "selected" : ""
+                  player ===
+                  "ninjacat"
+                    ? "selected"
+                    : ""
                 }`}
-                onClick={() => setPlayer("ninjacat")}
+                onClick={() =>
+                  setPlayer(
+                    "ninjacat"
+                  )
+                }
               >
                 <img
                   src="/ninjacatselect.png"
                   alt="NinjaCat"
                 />
-
-                <div className="player-name">
-                  NINJACAT
-                </div>
-
-                <div className="player-colour">
-                  RED TEAM
-                </div>
               </button>
 
               <button
                 className={`player-card manyu-card ${
-                  player === "manyu" ? "selected" : ""
+                  player ===
+                  "manyu"
+                    ? "selected"
+                    : ""
                 }`}
-                onClick={() => setPlayer("manyu")}
+                onClick={() =>
+                  setPlayer(
+                    "manyu"
+                  )
+                }
               >
                 <img
                   src="/manyuselect.png"
                   alt="Manyu"
                 />
-
-                <div className="player-name">
-                  MANYU
-                </div>
-
-                <div className="player-colour">
-                  BLUE TEAM
-                </div>
               </button>
             </div>
 
             <button
               className="start-button"
-              onClick={startGame}
+              onClick={
+                startGame
+              }
             >
               START GAME
             </button>
@@ -695,20 +1268,31 @@ export default function App() {
             GAME
         ================================== */}
 
-        {screen === "playing" && (
+        {screen ===
+          "playing" && (
           <>
             <div className="hud">
               <div className="hud-box">
-                <span>SCORE</span>
-                <strong>{score}</strong>
+                <span>
+                  SCORE
+                </span>
+
+                <strong>
+                  {score}
+                </strong>
               </div>
 
               <div className="hud-box timer-box">
-                <span>TIME</span>
+                <span>
+                  TIME
+                </span>
 
                 <strong
                   className={
-                    timeLeft <= 5 ? "danger-time" : ""
+                    timeLeft <=
+                    5
+                      ? "danger-time"
+                      : ""
                   }
                 >
                   {timeLeft}
@@ -716,10 +1300,14 @@ export default function App() {
               </div>
 
               <div className="hud-box">
-                <span>COMBO</span>
+                <span>
+                  COMBO
+                </span>
 
                 <strong>
-                  {combo > 0 ? `${combo}x` : "-"}
+                  {combo > 0
+                    ? `${combo}x`
+                    : "-"}
                 </strong>
               </div>
             </div>
@@ -730,7 +1318,9 @@ export default function App() {
 
             <div
               className={`hoop-wrap ${
-                swish ? "hoop-swish" : ""
+                swish
+                  ? "hoop-swish"
+                  : ""
               }`}
               style={{
                 left: `${hoopLeft}%`,
@@ -763,17 +1353,42 @@ export default function App() {
               alt=""
             />
 
-            {ballRender.visible && (
+            {/* BALL WAITING IN HAND */}
+
+            {ballReady && (
               <img
                 src="/basketball.png"
                 className="game-ball"
                 alt=""
                 style={{
-                  left: ballRender.x,
-                  top: ballRender.y,
-                  transform: `translate(-50%, -50%) rotate(${ballRender.rotation}deg)`,
+                  left:
+                    handBall.x,
+                  top:
+                    handBall.y,
+                  transform:
+                    "translate(-50%, -50%)",
                 }}
               />
+            )}
+
+            {/* ALL BALLS CURRENTLY FLYING */}
+
+            {flyingBalls.map(
+              (ball) => (
+                <img
+                  key={ball.id}
+                  src="/basketball.png"
+                  className="game-ball"
+                  alt=""
+                  style={{
+                    left:
+                      ball.x,
+                    top:
+                      ball.y,
+                    transform: `translate(-50%, -50%) rotate(${ball.rotation}deg)`,
+                  }}
+                />
+              )
             )}
 
             {message && (
@@ -783,11 +1398,14 @@ export default function App() {
             )}
 
             {score === 0 &&
-              !ballRef.current.shooting && (
+              ballReady && (
                 <div className="swipe-hint">
-                  <div className="swipe-arrow">↑</div>
+                  <div className="swipe-arrow">
+                    ↑
+                  </div>
 
-                  SWIPE UP TO SHOOT
+                  SWIPE UP TO
+                  SHOOT
                 </div>
               )}
           </>
@@ -797,41 +1415,57 @@ export default function App() {
             GAME OVER
         ================================== */}
 
-        {screen === "gameover" && (
+        {screen ===
+          "gameover" && (
           <div className="gameover-screen">
             <div className="gameover-panel">
               <div className="gameover-small">
                 TIME!
               </div>
 
-              <h2>GAME OVER</h2>
+              <h2>
+                GAME OVER
+              </h2>
 
               <img
-                src={selectImage}
+                src={
+                  selectImage
+                }
                 className="gameover-player"
                 alt=""
               />
 
               <div className="final-score">
-                <span>FINAL SCORE</span>
-                <strong>{score}</strong>
+                <span>
+                  FINAL SCORE
+                </span>
+
+                <strong>
+                  {score}
+                </strong>
               </div>
 
               <div className="final-stats">
                 BEST COMBO{" "}
-                <strong>{bestCombo}x</strong>
+                <strong>
+                  {bestCombo}x
+                </strong>
               </div>
 
               <button
                 className="start-button play-again"
-                onClick={startGame}
+                onClick={
+                  startGame
+                }
               >
                 PLAY AGAIN
               </button>
 
               <button
                 className="change-player"
-                onClick={backToMenu}
+                onClick={
+                  backToMenu
+                }
               >
                 CHANGE PLAYER
               </button>
