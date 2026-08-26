@@ -111,6 +111,23 @@ export default function App() {
     const w = game.clientWidth;
     const h = game.clientHeight;
 
+    const isMobile = w <= 700;
+
+    if (isMobile) {
+      if (player === "ninjacat") {
+        return {
+          x: w * 0.61,
+          y: h * 0.655,
+        };
+      }
+
+      return {
+        x: w * 0.61,
+        y: h * 0.655,
+      };
+    }
+
+    // DESKTOP - LEFT EXACTLY AS IT WAS
     if (player === "ninjacat") {
       return {
         x: w * 0.655,
