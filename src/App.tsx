@@ -101,45 +101,36 @@ export default function App() {
      Raised shooting hand
   ======================================== */
 
-  const getBallStart = useCallback(() => {
-    const game = gameRef.current;
+ const getBallStart = useCallback(() => {
+  const game = gameRef.current;
 
-    if (!game) {
-      return { x: 0, y: 0 };
-    }
+  if (!game) {
+    return { x: 0, y: 0 };
+  }
 
-    const w = game.clientWidth;
-    const h = game.clientHeight;
+  const w = game.clientWidth;
+  const h = game.clientHeight;
 
-    const isMobile = w <= 700;
+  // IMPORTANT:
+  // Uses actual DEVICE/SCREEN width,
+  // not the game container width.
+  const isMobile = window.innerWidth <= 700;
 
-    if (isMobile) {
-      if (player === "ninjacat") {
-        return {
-          x: w * 0.61,
-          y: h * 0.655,
-        };
-      }
-
-      return {
-        x: w * 0.61,
-        y: h * 0.655,
-      };
-    }
-
-    // DESKTOP - LEFT EXACTLY AS IT WAS
-    if (player === "ninjacat") {
-      return {
-        x: w * 0.655,
-        y: h * 0.615,
-      };
-    }
-
+  if (isMobile) {
     return {
-      x: w * 0.655,
-      y: h * 0.615,
+      // MOBILE ONLY - ball at raised hand
+      x: w * 0.76,
+      y: h * 0.59,
     };
-  }, [player]);
+  }
+
+  // DESKTOP - ORIGINAL POSITION
+  // completely unchanged
+  return {
+    x: w * 0.655,
+    y: h * 0.615,
+  };
+}, [player]);
 
   const resetBall = useCallback(() => {
     const start = getBallStart();
