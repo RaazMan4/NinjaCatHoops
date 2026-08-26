@@ -618,39 +618,24 @@ export default function App() {
   ======================================== */
 
   useEffect(() => {
-    const frame = (
-      time: number
-    ) => {
-      const game =
-        gameRef.current;
-
-      const hoop =
-        hoopRef.current;
+    const frame = (time: number) => {
+      const game = gameRef.current;
+      const hoop = hoopRef.current;
 
       if (
-        screenRef.current ===
-          "playing" &&
+        screenRef.current === "playing" &&
         game &&
         hoop &&
-        ballsRef.current.length >
-          0
+        ballsRef.current.length > 0
       ) {
-        if (
-          !lastFrameRef.current
-        ) {
-          lastFrameRef.current =
-            time;
+        if (!lastFrameRef.current) {
+          lastFrameRef.current = time;
         }
 
         let dt =
-          (time -
-            lastFrameRef.current) /
-          1000;
+          (time - lastFrameRef.current) / 1000;
 
-        dt = Math.min(
-          dt,
-          0.025
-        );
+        dt = Math.min(dt, 0.025);
 
         const gameRect =
           game.getBoundingClientRect();
@@ -661,18 +646,15 @@ export default function App() {
         const rimY =
           hoopRect.top -
           gameRect.top +
-          hoopRect.height *
-            0.29;
+          hoopRect.height * 0.29;
 
         const rimX =
           hoopRect.left -
           gameRect.left +
-          hoopRect.width *
-            0.5;
+          hoopRect.width * 0.5;
 
         const rimHalfWidth =
-          hoopRect.width *
-          0.2;
+          hoopRect.width * 0.2;
 
         const ballSize =
           getBallSize();
@@ -680,103 +662,76 @@ export default function App() {
         const now =
           performance.now();
 
-        const remainingBalls: BallState[] =
-          [];
+        const remainingBalls: BallState[] = [];
 
-        for (
-          const ball of ballsRef.current
-        ) {
-          const previousY =
-            ball.y;
+        for (const ball of ballsRef.current) {
+          const previousY = ball.y;
 
           /*
-            Faster gravity brings the ball back
-            down quickly and keeps the arc on screen.
+            Faster gravity keeps shot quick
+            and stops it flying miles off screen.
           */
 
-          ball.vy +=
-            SHOT_GRAVITY *
-            dt;
+          ball.vy += SHOT_GRAVITY * dt;
 
-          ball.x +=
-            ball.vx * dt;
-
-          ball.y +=
-            ball.vy * dt;
+          ball.x += ball.vx * dt;
+          ball.y += ball.vy * dt;
 
           const shotAge =
-            now -
-            ball.startedAt;
+            now - ball.startedAt;
 
           /*
-            SCORE ONLY WHEN IT ACTUALLY
-            CROSSES DOWN THROUGH THE RIM.
+            SCORE ONLY WHEN BALL CROSSES
+            DOWN THROUGH THE RIM.
           */
 
           if (!ball.scored) {
             const crossedRim =
-              previousY <
-                rimY &&
-              ball.y >=
-                rimY &&
+              previousY < rimY &&
+              ball.y >= rimY &&
               ball.vy > 0;
 
             const insideBasket =
-              Math.abs(
-                ball.x -
-                  rimX
-              ) <
+              Math.abs(ball.x - rimX) <
               rimHalfWidth -
-                ballSize *
-                  0.05;
+                ballSize * 0.05;
 
             if (
               crossedRim &&
               insideBasket
             ) {
-              ball.scored =
-                true;
-
-              ball.scoredAt =
-                now;
+              ball.scored = true;
+              ball.scoredAt = now;
 
               registerScore();
             }
           }
 
           /*
-            Keep a scored basketball visible
-            briefly as it falls through the net.
+            Keep scored ball visible briefly
+            while it drops through the net.
           */
 
           if (
             ball.scored &&
-            ball.scoredAt !==
-              null &&
-            now -
-              ball.scoredAt >
-              420
+            ball.scoredAt !== null &&
+            now - ball.scoredAt > 420
           ) {
             continue;
           }
 
           /*
             MISS
-
-            Only unresolved basketballs can miss.
           */
 
           if (!ball.scored) {
             const hasMissed =
               ball.y >
-                game.clientHeight +
-                  120 ||
+                game.clientHeight + 120 ||
               ball.x < -150 ||
               ball.x >
-                game.clientWidth +
-                  150 ||
-              shotAge >
-                2400;
+                game.clientWidth + 150 ||
+              shotAge > 2400;
 
             if (hasMissed) {
               registerMiss();
@@ -784,66 +739,58 @@ export default function App() {
             }
           }
 
-          remainingBalls.push(
-            ball
-          );
+          remainingBalls.push(ball);
         }
 
         ballsRef.current =
           remainingBalls;
 
         /*
-          Update everything visible.
+          UPDATE VISIBLE BALLS
         */
 
         setFlyingBalls(
-          remainingBalls.map(
-            (ball) => ({
-              id: ball.id,
-              x: ball.x,
-              y: ball.y,
-              rotation:
-                (now -
-                  ball.startedAt) *
-                0.3,
-            })
-          )
+          remainingBalls.map((ball) => ({
+            id: ball.id,
+            x: ball.x,
+            y: ball.y,
+            rotation:
+              (now - ball.startedAt) * 0.3,
+          }))
         );
 
         /*
-          If a shot scored and there are no more
-          unresolved balls currently heading at
-          the existing hoop, we can safely move it.
+          MOVE HOOP AFTER A SCORE
+
+          Important:
+          this now moves even if other balls
+          are still flying.
         */
 
-   if (pendingHoopMoveRef.current) {
-  pendingHoopMoveRef.current = false;
+        if (pendingHoopMoveRef.current) {
+          pendingHoopMoveRef.current = false;
 
-  window.setTimeout(() => {
-    if (screenRef.current === "playing") {
-      moveHoop();
-    }
-  }, 180);
-}
+          window.setTimeout(() => {
+            if (
+              screenRef.current === "playing"
+            ) {
+              moveHoop();
+            }
+          }, 180);
+        }
+      }
 
-      lastFrameRef.current =
-        time;
+      lastFrameRef.current = time;
 
       animationRef.current =
-        requestAnimationFrame(
-          frame
-        );
+        requestAnimationFrame(frame);
     };
 
     animationRef.current =
-      requestAnimationFrame(
-        frame
-      );
+      requestAnimationFrame(frame);
 
     return () => {
-      if (
-        animationRef.current
-      ) {
+      if (animationRef.current) {
         cancelAnimationFrame(
           animationRef.current
         );
